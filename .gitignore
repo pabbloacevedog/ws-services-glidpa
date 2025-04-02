@@ -1,0 +1,9 @@
+node_modules/
+package-lock.json
+.env
+.wwebjs_auth
+.webjs_cache
+/public/uploads
+puppeteer_data
+error.log
+combined.log
