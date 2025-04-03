@@ -10,9 +10,9 @@ class WhatsAppService {
 		this.isReady = false;
 		this.initializationAttempts = 0;
 		this.maxInitializationAttempts = 8;
-		this.reconnectDelay = 5000;
-		this.reconnectBackoff = 1.5;
-		this.maxReconnectDelay = 60000;
+		this.reconnectDelay = 2000; // Reducido de 5000 a 2000
+		this.reconnectBackoff = 1.2; // Reducido de 1.5 a 1.2
+		this.maxReconnectDelay = 30000; // Reducido de 60000 a 30000
 		this.browserInstance = null;
 		this.activeConversations = new Set();
 		this.qrCallbacks = new Set();
@@ -27,14 +27,26 @@ class WhatsAppService {
 				logger.info('Cliente ya inicializado');
 				return;
 			}
+
+			// Verificar si existe una sesión guardada
+			const authStrategy = new LocalAuth();
+			const hasSession = await authStrategy.isAuthenticated();
+			if (hasSession) {
+				logger.info('Sesión existente encontrada, iniciando cliente automáticamente');
+				this.autoReconnect = true;
+			} else {
+				logger.info('No hay sesión guardada, esperando solicitud de autenticación');
+				if (!forceInit) {
+					return;
+				}
+			}
 			if (this.initializationAttempts >= this.maxInitializationAttempts) {
 				logger.error('Se alcanzó el número máximo de intentos de inicialización');
-				// Resetear los intentos después de un período largo de espera
 				setTimeout(() => {
 					this.initializationAttempts = 0;
 					logger.info('Reiniciando contador de intentos de inicialización');
 					this.initializeClient();
-				}, 300000); // 5 minutos de espera antes de reiniciar
+				}, 60000); // Reducido de 300000 a 60000
 				return;
 			}
 
@@ -50,13 +62,10 @@ class WhatsAppService {
 				try {
 					logger.info('Destruyendo cliente anterior...');
 					await this.client.destroy();
-					// Esperar a que se liberen los recursos y el puerto
-					await new Promise(resolve => setTimeout(resolve, 10000));
+					await new Promise(resolve => setTimeout(resolve, 3000)); // Reducido de 10000 a 3000
 				} catch (error) {
 					logger.warn('Error al destruir el cliente anterior:', error);
-					// Forzar un tiempo de espera adicional en caso de error
-					await new Promise(resolve => setTimeout(resolve, 15000));
-					// Intentar forzar la liberación de recursos
+					await new Promise(resolve => setTimeout(resolve, 5000)); // Reducido de 15000 a 5000
 					this.client = null;
 					global.gc && global.gc();
 				}
@@ -77,42 +86,21 @@ class WhatsAppService {
 						'--no-sandbox',
 						'--disable-setuid-sandbox',
 						'--disable-dev-shm-usage',
-						'--disable-accelerated-2d-canvas',
 						'--disable-gpu',
-						'--disable-extensions',
-						'--disable-component-extensions-with-background-pages',
-						'--disable-background-timer-throttling',
-						'--disable-backgrounding-occluded-windows',
-						'--disable-renderer-backgrounding',
 						'--no-zygote',
-						'--no-first-run',
-						'--window-size=1280,720',
-						'--user-data-dir=./puppeteer_data',
-						'--disable-features=site-per-process',
-						'--disable-web-security',
-						'--disable-features=IsolateOrigins',
-						'--disable-site-isolation-trials',
-						'--disable-blink-features=AutomationControlled',
-						'--disable-features=TranslateUI',
-						'--disable-popup-blocking',
-						'--disable-notifications',
-						'--disable-infobars'
+						'--window-size=800,600',
+						'--user-data-dir=./puppeteer_data'
 					],
 					headless: true,
 					ignoreHTTPSErrors: true,
-					defaultViewport: null,
-					timeout: 120000,
-					protocolTimeout: 120000,
+					defaultViewport: { width: 800, height: 600 },
+					timeout: 30000,
+					protocolTimeout: 30000,
 					handleSIGINT: true,
 					handleSIGTERM: true,
 					handleSIGHUP: true,
-					connectionTimeout: 120000,
-					pipeline: false,
-					devtools: false,
-					slowMo: 50,
-					puppeteerOptions: {
-						protocolTimeout: 120000
-					}
+					connectionTimeout: 30000,
+					devtools: false
 				}
 			});
 
@@ -157,20 +145,21 @@ class WhatsAppService {
 
 				if (this.qrPromiseResolve && typeof this.qrPromiseResolve === 'function') {
 					try {
-						const qrBase64 = await qrcode.toDataURL(qr);
+						const qrBase64 = await qrcode.toDataURL(qr, { margin: 0.5, scale: 4 });
 						this.qrPromiseResolve(qrBase64);
+						this.qrPromiseResolve = null;
+						this.qrPromiseReject = null;
+						global.gc && global.gc();
 					} catch (error) {
 						logger.error('Error al generar QR en base64:', error);
-						if (this.qrPromiseReject && typeof this.qrPromiseReject === 'function') {
+						if (this.qrPromiseReject) {
 							this.qrPromiseReject(error);
+							this.qrPromiseResolve = null;
+							this.qrPromiseReject = null;
+							global.gc && global.gc();
 						}
 					}
-				} else {
-					logger.warn('No hay una función de resolución de promesa QR configurada');
 				}
-				// Limpiar las referencias después de resolver o rechazar
-				this.qrPromiseResolve = null;
-				this.qrPromiseReject = null;
 			});
 
 			this.client.on('ready', () => {
@@ -480,86 +469,131 @@ class WhatsAppService {
 			await this.initializeClient(true);
 
 			// Crear una nueva promesa y guardar sus funciones resolve/reject
-			let qrResolve, qrReject;
+			// let qrResolve, qrReject;
+			// const qrPromise = new Promise((resolve, reject) => {
+			// 	qrResolve = resolve;
+			// 	qrReject = reject;
+			// });
+
+			// // Guardar las referencias a las funciones resolve/reject
+			// this.qrPromiseResolve = qrResolve;
+			// this.qrPromiseReject = qrReject;
 			const qrPromise = new Promise((resolve, reject) => {
-				qrResolve = resolve;
-				qrReject = reject;
+				this.qrPromiseResolve = resolve;
+				this.qrPromiseReject = reject;
 			});
-
-			// Guardar las referencias a las funciones resolve/reject
-			this.qrPromiseResolve = qrResolve;
-			this.qrPromiseReject = qrReject;
-
-			// Definir los callbacks antes de registrarlos
-			const qrCallback = async (qr) => {
+			// Manejadores de eventos
+			const qrHandler = async (qr) => {
+				logger.info('QR recibido');
 				try {
-					logger.info('QR Code recibido en requestAuthentication');
-					// Convertir el QR a base64 para enviarlo al frontend
 					// const qrBase64 = await qrcode.toDataURL(qr);
-					logger.info('QR Code convertido a base64 exitosamente');
-
-					// Verificar que la promesa aún no ha sido resuelta
+					qrcodeterm.generate(qr, { small: true });
 					if (this.qrPromiseResolve) {
-						// Resolver la promesa con el código QR en base64
 						this.qrPromiseResolve(qr);
-						// Limpiar las referencias
-						this.qrPromiseResolve = null;
-						this.qrPromiseReject = null;
-						// Eliminar los listeners para evitar duplicados
-						this.client.removeListener('qr', qrCallback);
-						this.client.removeListener('authenticated', authCallback);
+						this.cleanupQrListeners();
 					}
 				} catch (error) {
-					logger.error('Error al generar QR en base64:', error);
-					// Verificar que la promesa aún no ha sido rechazada
+					logger.error('Error generando QR:', error);
 					if (this.qrPromiseReject) {
 						this.qrPromiseReject(error);
-						// Limpiar las referencias
-						this.qrPromiseResolve = null;
-						this.qrPromiseReject = null;
-						// Eliminar los listeners
-						this.client.removeListener('qr', qrCallback);
-						this.client.removeListener('authenticated', authCallback);
+						this.cleanupQrListeners();
 					}
 				}
 			};
 
-			const authCallback = () => {
-				logger.info('Autenticación exitosa en requestAuthentication');
-				// Verificar que la promesa aún no ha sido resuelta
+			const authHandler = () => {
+				logger.info('Autenticado desde request');
 				if (this.qrPromiseResolve) {
-					this.qrPromiseResolve(null);
-					// Limpiar las referencias
-					this.qrPromiseResolve = null;
-					this.qrPromiseReject = null;
-					// Eliminar los listeners
-					this.client.removeListener('qr', qrCallback);
-					this.client.removeListener('authenticated', authCallback);
+					this.qrPromiseResolve({ status: 'authenticated' });
+					this.cleanupQrListeners();
 				}
 			};
 
-			// Registrar los callbacks para los eventos
-			this.client.on('qr', qrCallback);
-			this.client.on('authenticated', authCallback);
+			// Agregar listeners
+			this.client.on('qr', qrHandler);
+			this.client.once('authenticated', authHandler);
+			// Definir los callbacks antes de registrarlos
+			// const qrCallback = async (qr) => {
+			// 	try {
+			// 		logger.info('QR Code recibido en requestAuthentication');
+			// 		// Convertir el QR a base64 para enviarlo al frontend
+			// 		// const qrBase64 = await qrcode.toDataURL(qr);
+			// 		logger.info('QR Code convertido a base64 exitosamente');
+
+			// 		// Verificar que la promesa aún no ha sido resuelta
+			// 		if (this.qrPromiseResolve) {
+			// 			// Resolver la promesa con el código QR en base64
+			// 			this.qrPromiseResolve(qr);
+			// 			// Limpiar las referencias
+			// 			this.qrPromiseResolve = null;
+			// 			this.qrPromiseReject = null;
+			// 			// Eliminar los listeners para evitar duplicados
+			// 			this.client.removeListener('qr', qrCallback);
+			// 			this.client.removeListener('authenticated', authCallback);
+			// 		}
+			// 	} catch (error) {
+			// 		logger.error('Error al generar QR en base64:', error);
+			// 		// Verificar que la promesa aún no ha sido rechazada
+			// 		if (this.qrPromiseReject) {
+			// 			this.qrPromiseReject(error);
+			// 			// Limpiar las referencias
+			// 			this.qrPromiseResolve = null;
+			// 			this.qrPromiseReject = null;
+			// 			// Eliminar los listeners
+			// 			this.client.removeListener('qr', qrCallback);
+			// 			this.client.removeListener('authenticated', authCallback);
+			// 		}
+			// 	}
+			// };
+
+			// const authCallback = () => {
+			// 	logger.info('Autenticación exitosa en requestAuthentication');
+			// 	// Verificar que la promesa aún no ha sido resuelta
+			// 	if (this.qrPromiseResolve) {
+			// 		this.qrPromiseResolve(null);
+			// 		// Limpiar las referencias
+			// 		this.qrPromiseResolve = null;
+			// 		this.qrPromiseReject = null;
+			// 		// Eliminar los listeners
+			// 		this.client.removeListener('qr', qrCallback);
+			// 		this.client.removeListener('authenticated', authCallback);
+			// 	}
+			// };
+
+			// // Registrar los callbacks para los eventos
+			// this.client.on('qr', qrCallback);
+			// this.client.on('authenticated', authCallback);
 
 			// Timeout después de 60 segundos
-			const timeoutId = setTimeout(() => {
-				logger.warn('Timeout en requestAuthentication');
-				// Verificar que la promesa aún no ha sido resuelta
+			// const timeoutId = setTimeout(() => {
+			// 	logger.warn('Timeout en requestAuthentication');
+			// 	// Verificar que la promesa aún no ha sido resuelta
+			// 	if (this.qrPromiseResolve) {
+			// 		this.qrPromiseResolve(null);
+			// 		// Limpiar las referencias
+			// 		this.qrPromiseResolve = null;
+			// 		this.qrPromiseReject = null;
+			// 		// Eliminar los listeners
+			// 		this.client.removeListener('qr', qrCallback);
+			// 		this.client.removeListener('authenticated', authCallback);
+			// 	}
+			// }, 60000);
+			// Timeout
+			const timeout = setTimeout(() => {
 				if (this.qrPromiseResolve) {
-					this.qrPromiseResolve(null);
-					// Limpiar las referencias
-					this.qrPromiseResolve = null;
-					this.qrPromiseReject = null;
-					// Eliminar los listeners
-					this.client.removeListener('qr', qrCallback);
-					this.client.removeListener('authenticated', authCallback);
+					this.qrPromiseReject(new Error('Timeout generando QR'));
+					this.cleanupQrListeners();
 				}
 			}, 60000);
 
+			// Limpiar al finalizar
+			qrPromise.finally(() => {
+				clearTimeout(timeout);
+				this.cleanupQrListeners();
+			});
 			// Limpiar timeout si se resuelve antes
 			this.client.once('ready', () => {
-				clearTimeout(timeoutId);
+				clearTimeout(timeout);
 			});
 
 			// Devolver la promesa
@@ -568,6 +602,12 @@ class WhatsAppService {
 			logger.error('Error al solicitar autenticación:', error);
 			return null;
 		}
+	}
+	// Nuevo método para limpiar listeners
+	cleanupQrListeners() {
+		this.qrPromiseResolve = null;
+		this.qrPromiseReject = null;
+		// Remover listeners específicos si es necesario
 	}
 }
 
